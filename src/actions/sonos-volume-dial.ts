@@ -1,6 +1,6 @@
 import { action, DialAction, DialRotateEvent, SingletonAction, WillAppearEvent, DialUpEvent, TouchTapEvent, DidReceiveSettingsEvent } from '@elgato/streamdeck';
 import streamDeck from '@elgato/streamdeck';
-import { Sonos } from 'sonos';
+import { Sonos, AsyncDeviceDiscovery, SonosGroup } from 'sonos';
 
 /**
  * Sonos Volume Dial action that controls a Sonos speaker's volume.
@@ -12,6 +12,7 @@ export class SonosVolumeDial extends SingletonAction {
 	private static readonly VOLUME_CHANGE_DEBOUNCE_MS = 500;
 
 	private sonos: Sonos | null = null;
+	private cachedGroups: SonosGroup[] = [];
 	private lastKnownVolume: number = 50;
 	private isMuted: boolean = false;
 	private logger = streamDeck.logger.createScope('SonosVolumeDial');
@@ -71,6 +72,51 @@ export class SonosVolumeDial extends SingletonAction {
 	}
 
 	/**
+	* Discover all Sonos groups on the network
+	*/
+	private async discoverGroups(): Promise<SonosGroup[]> {
+		const logger = this.logger.createScope('Discovery');
+		try {
+			logger.info('Starting Sonos discovery...');
+			const discovery = new AsyncDeviceDiscovery();
+			const device = await discovery.discover({ timeout: 5000 });
+			const groups = await device.getAllGroups();
+			logger.info('Found groups:', groups.map(g => g.Name));
+			this.cachedGroups = groups;
+			return groups;
+		} catch (error) {
+			logger.error('Discovery failed:', {
+				error: error instanceof Error ? error.message : String(error)
+			});
+			return [];
+		}
+	}
+
+	/**
+	 * Get a Sonos connection for a named group
+	*/
+	private async getGroupConnection(groupName: string): Promise<Sonos | null> {
+		const logger = this.logger.createScope('GroupConnection');
+		try {
+			// Use cached groups first, rediscover if empty
+			if (this.cachedGroups.length === 0) {
+				await this.discoverGroups();
+			}
+			const group = this.cachedGroups.find(g => g.Name === groupName);
+			if (!group) {
+				logger.error('Group not found:', groupName);
+				return null;
+			}
+			return new Sonos(group.host, group.port);
+		} catch (error) {
+			logger.error('Failed to get group connection:', {
+				error: error instanceof Error ? error.message : String(error)
+			});
+			return null;
+		}
+	}
+
+	/**
 	 * Self-scheduling poll function that maintains consistent spacing
 	 */
 	private async pollWithDelay(logger: ReturnType<typeof streamDeck.logger.createScope>) {
@@ -89,9 +135,14 @@ export class SonosVolumeDial extends SingletonAction {
 			try {
 				// If we don't have a connection, try to reconnect
 				if (!this.sonos) {
-					if (this.currentSettings.speakerIp) {
-						logger.info('Reconnecting to speaker:', this.currentSettings.speakerIp);
-						this.sonos = new Sonos(this.currentSettings.speakerIp);
+					if (this.currentSettings.groupName) {
+						logger.info('Reconnecting to group:', this.currentSettings.groupName);
+						this.sonos = await this.getGroupConnection(this.currentSettings.groupName);
+						if (!this.sonos) {
+							logger.debug('Could not find group, stopping polling');
+							this.stopPolling();
+							return;
+						}
 					} else {
 						logger.debug('No speaker IP, stopping polling');
 						this.stopPolling();
@@ -166,6 +217,28 @@ export class SonosVolumeDial extends SingletonAction {
 	}
 
 	/**
+	  * Handle messages from the property inspector
+	  */
+	override async onSendToPlugin(ev: any): Promise<void> {
+		const logger = this.logger.createScope('SendToPlugin');
+		try {
+			if (ev.payload.event === 'getGroups') {
+				logger.info('Property inspector requested group list');
+				const groups = await this.discoverGroups();
+				const groupNames = groups.map(g => g.Name);
+				await ev.action.sendToPropertyInspector({
+					event: 'groupList',
+					groups: groupNames
+				});
+			}
+		} catch (error) {
+			logger.error('Error in onSendToPlugin:', {
+				error: error instanceof Error ? error.message : String(error)
+			});
+		}
+	}
+
+	/**
 	 * Clean up when the action is removed
 	 */
 	override onWillDisappear(): void {
@@ -182,59 +255,65 @@ export class SonosVolumeDial extends SingletonAction {
 	override async onWillAppear(ev: WillAppearEvent<SonosVolumeDialSettings>): Promise<void> {
 		// Create a scoped logger for this specific instance
 		const logger = this.logger.createScope('WillAppear');
-		
+
 		try {
 			// Verify that the action is a dial so we can call setFeedback.
 			if (!ev.action.isDial()) return;
 
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
-			const { speakerIp, value = 50, volumeStep = 5 } = ev.payload.settings;
+			const { groupName, value = 50, volumeStep = 5 } = ev.payload.settings;
 
 			// Store current settings and action first
 			this.currentAction = dialAction;
 			this.currentSettings = ev.payload.settings;
 
 			// Initialize display with current or default value
-			dialAction.setFeedback({ 
+			dialAction.setFeedback({
 				value: {
 					value,
 					opacity: this.isMuted ? 0.5 : 1.0
 				},
-				indicator: { 
+				indicator: {
 					value,
 					opacity: this.isMuted ? 0.5 : 1.0
 				},
 			});
 
 			// If we have a speaker IP, initialize the connection and update volume
-			if (speakerIp) {
-				logger.info('Connecting to Sonos speaker:', speakerIp);
-				this.sonos = new Sonos(speakerIp);
-				
+			if (groupName) {
+				logger.info('Connecting to Sonos group:', groupName);
+				this.sonos = await this.getGroupConnection(groupName);
+
+				if (!this.sonos) {
+					logger.error('Could not connect to group:', groupName);
+					this.showAlert(dialAction, 'Could not find Sonos group');
+					return;
+				}
+
 				try {
 					// Get current volume and mute state
 					const [volume, isMuted] = await Promise.all([
 						this.sonos.getVolume(),
 						this.sonos.getMuted()
 					]);
-					
+
 					this.lastKnownVolume = volume;
 					this.isMuted = isMuted;
-					
+
 					// Update UI with current state
-					dialAction.setFeedback({ 
+					dialAction.setFeedback({
 						value: {
 							value: volume,
 							opacity: isMuted ? 0.5 : 1.0,
 						},
-						indicator: { 
+						indicator: {
 							value: volume,
 							opacity: isMuted ? 0.5 : 1.0
 						}
 					});
 
 					// Send settings back to Property Inspector with current volume
-					dialAction.setSettings({ speakerIp, volumeStep, value: volume });
+					dialAction.setSettings({ groupName, volumeStep, value: volume });
 
 					// Start polling for updates only after we've successfully connected and initialized
 					this.startPolling(dialAction);
@@ -246,11 +325,10 @@ export class SonosVolumeDial extends SingletonAction {
 					this.sonos = null;
 					this.showAlert(dialAction, 'Failed to connect to speaker');
 					// Even if connection fails, ensure settings are synced
-					dialAction.setSettings({ speakerIp, volumeStep, value });
+					dialAction.setSettings({ groupName, volumeStep, value });
 				}
 			} else {
-				logger.warn('No speaker IP configured');
-				// Ensure settings are synced even when no IP is configured
+				logger.warn('No group configured');
 				dialAction.setSettings({ volumeStep, value });
 			}
 		} catch (error) {
@@ -268,28 +346,28 @@ export class SonosVolumeDial extends SingletonAction {
 		// Create a scoped logger for this specific rotation event
 		const logger = this.logger.createScope('DialRotate');
 		const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
-		
+
 		try {
-			const { speakerIp, value = this.lastKnownVolume, volumeStep = 5 } = ev.payload.settings;
+			const { groupName, value = this.lastKnownVolume, volumeStep = 5 } = ev.payload.settings;
 
 			// Mark that we're actively rotating
 			this.isRotating = true;
 
 			// Update stored settings
 			this.currentSettings = ev.payload.settings;
-			
+
 			const { ticks } = ev.payload;
 
 			// Calculate new value using the volumeStep setting
 			const newValue = Math.max(0, Math.min(100, value + (ticks * volumeStep)));
 
 			// Update UI immediately for responsiveness
-			dialAction.setFeedback({ 
+			dialAction.setFeedback({
 				value: {
 					value: newValue,
 					opacity: this.isMuted ? 0.5 : 1.0,
 				},
-				indicator: { 
+				indicator: {
 					value: newValue,
 					opacity: this.isMuted ? 0.5 : 1.0
 				}
@@ -304,13 +382,16 @@ export class SonosVolumeDial extends SingletonAction {
 			}
 
 			// Handle Sonos operations in the background after debounce
-			if (speakerIp) {
+			if (groupName) {
 				this.volumeChangeTimeout = setTimeout(async () => {
 					try {
 						// Initialize connection if needed
 						if (!this.sonos) {
-							logger.info('Reconnecting to speaker:', speakerIp);
-							this.sonos = new Sonos(speakerIp);
+							logger.info('Reconnecting to group:', groupName);
+							this.sonos = await this.getGroupConnection(groupName);
+							if (!this.sonos) {
+								throw new Error(`Could not find group: ${groupName}`);
+							}
 						}
 
 						// If speaker is muted, unmute it first
@@ -337,8 +418,8 @@ export class SonosVolumeDial extends SingletonAction {
 					}
 				}, SonosVolumeDial.VOLUME_CHANGE_DEBOUNCE_MS);
 			} else {
-				logger.warn('No speaker IP configured');
-				this.showAlert(dialAction, 'No speaker IP configured');
+				logger.warn('No group configured');
+				this.showAlert(dialAction, 'No group configured');
 				this.isRotating = false;
 			}
 		} catch (error) {
@@ -356,33 +437,36 @@ export class SonosVolumeDial extends SingletonAction {
 	override async onDialUp(ev: DialUpEvent<SonosVolumeDialSettings>): Promise<void> {
 		// Create a scoped logger for this specific press event
 		const logger = this.logger.createScope('DialUp');
-		
+
 		try {
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
-			const { speakerIp } = ev.payload.settings;
+			const { groupName } = ev.payload.settings;
 
 			// Update UI immediately with optimistic state
 			const newMutedState = !this.isMuted;
 			this.isMuted = newMutedState;
-			dialAction.setFeedback({ 
+			dialAction.setFeedback({
 				value: {
 					value: this.lastKnownVolume,
 					opacity: newMutedState ? 0.5 : 1.0,
 				},
-				indicator: { 
+				indicator: {
 					value: this.lastKnownVolume,
 					opacity: newMutedState ? 0.5 : 1.0
 				}
 			});
 
 			// Handle Sonos operations in the background
-			if (speakerIp) {
+			if (groupName) {
 				Promise.resolve().then(async () => {
 					try {
 						// Initialize connection if needed
 						if (!this.sonos) {
-							logger.info('Reconnecting to speaker:', speakerIp);
-							this.sonos = new Sonos(speakerIp);
+							logger.info('Reconnecting to group:', groupName);
+							this.sonos = await this.getGroupConnection(groupName);
+							if (!this.sonos) {
+								throw new Error(`Could not find group: ${groupName}`);
+							}
 							// Restart polling if it was stopped
 							if (!this.pollInterval) {
 								this.startPolling(dialAction);
@@ -403,8 +487,8 @@ export class SonosVolumeDial extends SingletonAction {
 					}
 				});
 			} else {
-				logger.warn('No speaker IP configured');
-				this.showAlert(dialAction, 'No speaker IP configured');
+				logger.warn('No group configured');
+				this.showAlert(dialAction, 'No group configured');
 			}
 		} catch (error) {
 			logger.error('Error in onDialUp:', {
@@ -420,33 +504,36 @@ export class SonosVolumeDial extends SingletonAction {
 	override async onTouchTap(ev: TouchTapEvent<SonosVolumeDialSettings>): Promise<void> {
 		// Create a scoped logger for this specific tap event
 		const logger = this.logger.createScope('TouchTap');
-		
+
 		try {
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
-			const { speakerIp } = ev.payload.settings;
+			const { groupName } = ev.payload.settings;
 
 			// Update UI immediately with optimistic state
 			const newMutedState = !this.isMuted;
 			this.isMuted = newMutedState;
-			dialAction.setFeedback({ 
+			dialAction.setFeedback({
 				value: {
 					value: this.lastKnownVolume,
 					opacity: newMutedState ? 0.5 : 1.0,
 				},
-				indicator: { 
+				indicator: {
 					value: this.lastKnownVolume,
 					opacity: newMutedState ? 0.5 : 1.0
 				}
 			});
 
 			// Handle Sonos operations in the background
-			if (speakerIp) {
+			if (groupName) {
 				Promise.resolve().then(async () => {
 					try {
 						// Initialize connection if needed
 						if (!this.sonos) {
-							logger.info('Reconnecting to speaker:', speakerIp);
-							this.sonos = new Sonos(speakerIp);
+							logger.info('Reconnecting to group:', groupName);
+							this.sonos = await this.getGroupConnection(groupName);
+							if (!this.sonos) {
+								throw new Error(`Could not find group: ${groupName}`);
+							}
 							// Restart polling if it was stopped
 							if (!this.pollInterval) {
 								this.startPolling(dialAction);
@@ -467,8 +554,8 @@ export class SonosVolumeDial extends SingletonAction {
 					}
 				});
 			} else {
-				logger.warn('No speaker IP configured');
-				this.showAlert(dialAction, 'No speaker IP configured');
+				logger.warn('No group configured');
+				this.showAlert(dialAction, 'No group configured');
 			}
 		} catch (error) {
 			logger.error('Error in onTouchTap:', {
@@ -483,43 +570,47 @@ export class SonosVolumeDial extends SingletonAction {
 	 */
 	override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<SonosVolumeDialSettings>): Promise<void> {
 		const logger = this.logger.createScope('DidReceiveSettings');
-		
+
 		try {
 			if (!ev.action.isDial()) return;
 
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
-			const { speakerIp, value = this.lastKnownVolume, volumeStep = 5 } = ev.payload.settings;
+			const { groupName, value = this.lastKnownVolume, volumeStep = 5 } = ev.payload.settings;
 
 			// Store current settings
 			this.currentSettings = ev.payload.settings;
 
 			// If speaker IP changed, we need to reconnect
-			if (speakerIp !== this.currentSettings?.speakerIp) {
+			if (groupName !== this.currentSettings?.groupName) {
 				// Clear existing connection
 				this.sonos = null;
 				this.stopPolling();
 
-				if (speakerIp) {
-					logger.info('Connecting to new speaker:', speakerIp);
-					this.sonos = new Sonos(speakerIp);
-					
+				if (groupName) {
+					logger.info('Connecting to new group:', groupName);
+					this.sonos = await this.getGroupConnection(groupName);
+					if (!this.sonos) {
+						logger.error('Could not connect to group:', groupName);
+						this.showAlert(dialAction, 'Could not find Sonos group');
+						return;
+					}
 					try {
 						// Get current volume and mute state
 						const [volume, isMuted] = await Promise.all([
 							this.sonos.getVolume(),
 							this.sonos.getMuted()
 						]);
-						
+
 						this.lastKnownVolume = volume;
 						this.isMuted = isMuted;
-						
+
 						// Update UI with current state
-						dialAction.setFeedback({ 
+						dialAction.setFeedback({
 							value: {
 								value: volume,
 								opacity: isMuted ? 0.5 : 1.0,
 							},
-							indicator: { 
+							indicator: {
 								value: volume,
 								opacity: isMuted ? 0.5 : 1.0
 							}
@@ -529,12 +620,12 @@ export class SonosVolumeDial extends SingletonAction {
 						// Start polling for updates
 						this.startPolling(dialAction);
 					} catch (error) {
-						logger.error('Failed to connect to new speaker:', {
+						logger.error('Failed to connect to new group:', {
 							error: error instanceof Error ? error.message : String(error),
 							stack: error instanceof Error ? error.stack : undefined
 						});
 						this.sonos = null;
-						this.showAlert(dialAction, 'Failed to connect to speaker');
+						this.showAlert(dialAction, 'Failed to connect to group');
 					}
 				}
 			}
@@ -552,6 +643,6 @@ export class SonosVolumeDial extends SingletonAction {
  */
 type SonosVolumeDialSettings = {
 	value: number;
-	speakerIp?: string;
+	groupName?: string;
 	volumeStep: number;
 };
