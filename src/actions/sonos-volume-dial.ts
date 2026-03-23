@@ -226,7 +226,7 @@ export class SonosVolumeDial extends SingletonAction {
 				logger.info('Property inspector requested group list');
 				const groups = await this.discoverGroups();
 				const groupNames = groups.map(g => g.Name);
-				await ev.action.sendToPropertyInspector({
+				await streamDeck.ui.current?.sendToPropertyInspector({
 					event: 'groupList',
 					groups: groupNames
 				});
@@ -577,11 +577,15 @@ export class SonosVolumeDial extends SingletonAction {
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
 			const { groupName, value = this.lastKnownVolume, volumeStep = 5 } = ev.payload.settings;
 
+		
+			// Capture previous group name before updating settings
+			const previousGroupName = this.currentSettings?.groupName;
+
 			// Store current settings
 			this.currentSettings = ev.payload.settings;
 
 			// If speaker IP changed, we need to reconnect
-			if (groupName !== this.currentSettings?.groupName) {
+			if (groupName !== previousGroupName) {
 				// Clear existing connection
 				this.sonos = null;
 				this.stopPolling();
