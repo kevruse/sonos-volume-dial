@@ -4,7 +4,8 @@ declare module 'sonos' {
         getVolume(): Promise<number>;
         setVolume(volume: number): Promise<void>;
         getMuted(): Promise<boolean>;
-        setMuted(muted: boolean): Promise<void>;
+        getCurrentState(): Promise<string>;
+        togglePlayback(): Promise<boolean>;
         getAllGroups(): Promise<SonosGroup[]>;
     }
 

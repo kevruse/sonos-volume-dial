@@ -14,7 +14,7 @@ export class SonosVolumeDial extends SingletonAction {
 	private sonos: Sonos | null = null;
 	private cachedGroups: SonosGroup[] = [];
 	private lastKnownVolume: number = 50;
-	private isMuted: boolean = false;
+	private isPaused: boolean = false;
 	private logger = streamDeck.logger.createScope('SonosVolumeDial');
 	private pollInterval: { active: boolean } | null = null;
 	private pollTimeoutId: NodeJS.Timeout | null = null;
@@ -151,26 +151,27 @@ export class SonosVolumeDial extends SingletonAction {
 				}
 
 				// Get current volume and mute state
-				const [volume, isMuted] = await Promise.all([
+				const [volume, currentState] = await Promise.all([
 					this.sonos.getVolume(),
-					this.sonos.getMuted()
+					this.sonos.getCurrentState()
 				]);
+				const isPaused = currentState === 'paused' || currentState === 'stopped';
 
 				// Only update if values have changed and we're not actively rotating
-				if ((volume !== this.lastKnownVolume || isMuted !== this.isMuted) && !this.isRotating) {
-					logger.debug('Speaker state changed externally - volume:', volume, 'muted:', isMuted);
+				if ((volume !== this.lastKnownVolume || isPaused !== this.isPaused) && !this.isRotating) {
+					logger.debug('Speaker state changed externally - volume:', volume, 'paused:', isPaused);
 					this.lastKnownVolume = volume;
-					this.isMuted = isMuted;
+					this.isPaused = isPaused;
 
 					// Update UI to reflect current state
 					this.currentAction.setFeedback({
 						value: {
 							value: volume,
-							opacity: isMuted ? 0.5 : 1.0,
+							opacity: isPaused ? 0.5 : 1.0,
 						},
 						indicator: {
 							value: volume,
-							opacity: isMuted ? 0.5 : 1.0
+							opacity: isPaused ? 0.5 : 1.0
 						}
 					});
 					this.currentAction.setSettings({ ...this.currentSettings, value: volume });
@@ -271,11 +272,11 @@ export class SonosVolumeDial extends SingletonAction {
 			dialAction.setFeedback({
 				value: {
 					value,
-					opacity: this.isMuted ? 0.5 : 1.0
+					opacity: this.isPaused ? 0.5 : 1.0
 				},
 				indicator: {
 					value,
-					opacity: this.isMuted ? 0.5 : 1.0
+					opacity: this.isPaused ? 0.5 : 1.0
 				},
 			});
 
@@ -292,23 +293,24 @@ export class SonosVolumeDial extends SingletonAction {
 
 				try {
 					// Get current volume and mute state
-					const [volume, isMuted] = await Promise.all([
+					const [volume, currentState] = await Promise.all([
 						this.sonos.getVolume(),
-						this.sonos.getMuted()
+						this.sonos.getCurrentState()
 					]);
+					const isPaused = currentState === 'paused' || currentState === 'stopped';
 
 					this.lastKnownVolume = volume;
-					this.isMuted = isMuted;
+					this.isPaused = isPaused;
 
 					// Update UI with current state
 					dialAction.setFeedback({
 						value: {
 							value: volume,
-							opacity: isMuted ? 0.5 : 1.0,
+							opacity: isPaused ? 0.5 : 1.0,
 						},
 						indicator: {
 							value: volume,
-							opacity: isMuted ? 0.5 : 1.0
+							opacity: isPaused ? 0.5 : 1.0
 						}
 					});
 
@@ -365,11 +367,11 @@ export class SonosVolumeDial extends SingletonAction {
 			dialAction.setFeedback({
 				value: {
 					value: newValue,
-					opacity: this.isMuted ? 0.5 : 1.0,
+					opacity: this.isPaused ? 0.5 : 1.0,
 				},
 				indicator: {
 					value: newValue,
-					opacity: this.isMuted ? 0.5 : 1.0
+					opacity: this.isPaused ? 0.5 : 1.0
 				}
 			});
 			dialAction.setSettings({ ...this.currentSettings, value: newValue });
@@ -395,9 +397,9 @@ export class SonosVolumeDial extends SingletonAction {
 						}
 
 						// If speaker is muted, unmute it first
-						if (this.isMuted) {
-							await this.sonos.setMuted(false);
-							this.isMuted = false;
+						if (this.isPaused) {
+							await this.sonos.togglePlayback();
+							this.isPaused = false;
 						}
 
 						// Set the volume without waiting for verification
@@ -443,16 +445,16 @@ export class SonosVolumeDial extends SingletonAction {
 			const { groupName } = ev.payload.settings;
 
 			// Update UI immediately with optimistic state
-			const newMutedState = !this.isMuted;
-			this.isMuted = newMutedState;
+			const newPausedState = !this.isPaused;
+			this.isPaused = newPausedState;
 			dialAction.setFeedback({
 				value: {
 					value: this.lastKnownVolume,
-					opacity: newMutedState ? 0.5 : 1.0,
+					opacity: newPausedState ? 0.5 : 1.0,
 				},
 				indicator: {
 					value: this.lastKnownVolume,
-					opacity: newMutedState ? 0.5 : 1.0
+					opacity: newPausedState ? 0.5 : 1.0
 				}
 			});
 
@@ -475,14 +477,14 @@ export class SonosVolumeDial extends SingletonAction {
 
 						// Set mute state without waiting for verification
 						// Let the polling cycle handle any discrepancies
-						await this.sonos.setMuted(newMutedState);
+						await this.sonos.togglePlayback();
 					} catch (error) {
-						logger.error('Failed to toggle mute:', {
+						logger.error('Failed to toggle playback:', {
 							error: error instanceof Error ? error.message : String(error),
 							stack: error instanceof Error ? error.stack : undefined
 						});
 						this.sonos = null;
-						this.showAlert(dialAction, 'Failed to toggle mute');
+						this.showAlert(dialAction, 'Failed to toggle playback');
 						// Keep optimistic update UI state, let polling sync actual state
 					}
 				});
@@ -510,16 +512,16 @@ export class SonosVolumeDial extends SingletonAction {
 			const { groupName } = ev.payload.settings;
 
 			// Update UI immediately with optimistic state
-			const newMutedState = !this.isMuted;
-			this.isMuted = newMutedState;
+			const newPausedState = !this.isPaused;
+			this.isPaused = newPausedState;
 			dialAction.setFeedback({
 				value: {
 					value: this.lastKnownVolume,
-					opacity: newMutedState ? 0.5 : 1.0,
+					opacity: newPausedState ? 0.5 : 1.0,
 				},
 				indicator: {
 					value: this.lastKnownVolume,
-					opacity: newMutedState ? 0.5 : 1.0
+					opacity: newPausedState ? 0.5 : 1.0
 				}
 			});
 
@@ -542,14 +544,14 @@ export class SonosVolumeDial extends SingletonAction {
 
 						// Set mute state without waiting for verification
 						// Let the polling cycle handle any discrepancies
-						await this.sonos.setMuted(newMutedState);
+						await this.sonos.togglePlayback();
 					} catch (error) {
-						logger.error('Failed to toggle mute:', {
+						logger.error('Failed to toggle playback:', {
 							error: error instanceof Error ? error.message : String(error),
 							stack: error instanceof Error ? error.stack : undefined
 						});
 						this.sonos = null;
-						this.showAlert(dialAction, 'Failed to toggle mute');
+						this.showAlert(dialAction, 'Failed to toggle playback');
 						// Keep optimistic update UI state, let polling sync actual state
 					}
 				});
@@ -577,7 +579,7 @@ export class SonosVolumeDial extends SingletonAction {
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
 			const { groupName, value = this.lastKnownVolume, volumeStep = 5 } = ev.payload.settings;
 
-		
+
 			// Capture previous group name before updating settings
 			const previousGroupName = this.currentSettings?.groupName;
 
@@ -600,23 +602,23 @@ export class SonosVolumeDial extends SingletonAction {
 					}
 					try {
 						// Get current volume and mute state
-						const [volume, isMuted] = await Promise.all([
+						const [volume, currentState] = await Promise.all([
 							this.sonos.getVolume(),
-							this.sonos.getMuted()
+							this.sonos.getCurrentState()
 						]);
+						const isPaused = currentState === 'paused' || currentState === 'stopped';
 
 						this.lastKnownVolume = volume;
-						this.isMuted = isMuted;
+						this.isPaused = isPaused;
 
-						// Update UI with current state
 						dialAction.setFeedback({
 							value: {
 								value: volume,
-								opacity: isMuted ? 0.5 : 1.0,
+								opacity: isPaused ? 0.5 : 1.0,
 							},
 							indicator: {
 								value: volume,
-								opacity: isMuted ? 0.5 : 1.0
+								opacity: isPaused ? 0.5 : 1.0
 							}
 						});
 						dialAction.setSettings({ ...ev.payload.settings, value: volume });
