@@ -1,0 +1,62 @@
+{
+    "$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+    "id": "track-info",
+    "items": [
+        {
+            "key": "albumArt",
+            "type": "pixmap",
+            "rect": [4, 20, 60, 60]
+        },
+        {
+            "key": "groupName",
+            "type": "text",
+            "rect": [68, 6, 100, 12],
+            "font": { "size": 10, "weight": 400 },
+            "alignment": "left",
+            "text-overflow": "ellipsis"
+        },
+        {
+            "key": "playState",
+            "type": "text",
+            "rect": [168, 6, 28, 12],
+            "font": { "size": 10, "weight": 400 },
+            "alignment": "right"
+        },
+        {
+            "key": "trackTitle",
+            "type": "text",
+            "rect": [68, 22, 130, 18],
+            "font": { "size": 12, "weight": 700 },
+            "alignment": "left",
+            "text-overflow": "ellipsis"
+        },
+        {
+            "key": "artistName",
+            "type": "text",
+            "rect": [68, 44, 120, 14],
+            "font": { "size": 10, "weight": 400 },
+            "alignment": "left",
+            "text-overflow": "ellipsis"
+        },
+        {
+            "key": "elapsed",
+            "type": "text",
+            "rect": [68, 62, 26, 12],
+            "font": { "size": 9, "weight": 400 },
+            "alignment": "left"
+        },
+        {
+            "key": "progress",
+            "type": "bar",
+            "rect": [96, 65, 88, 6],
+            "bar_fill_c": "#1DB954"
+        },
+        {
+            "key": "duration",
+            "type": "text",
+            "rect": [186, 62, 12, 12],
+            "font": { "size": 9, "weight": 400 },
+            "alignment": "right"
+        }
+    ]
+}
