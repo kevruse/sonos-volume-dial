@@ -7,6 +7,7 @@ declare module 'sonos' {
         getCurrentState(): Promise<string>;
         togglePlayback(): Promise<boolean>;
         getAllGroups(): Promise<SonosGroup[]>;
+        currentTrack(): Promise<SonosTrack>;
     }
 
     export interface SonosGroup {
@@ -23,6 +24,15 @@ declare module 'sonos' {
         Location: string;
     }
 
+    export interface SonosTrack {
+        title: string;
+        artist: string;
+        album: string;
+        albumArtURI: string;
+        duration: number;
+        position?: number;
+    }
+    
     export class AsyncDeviceDiscovery {
         discover(options?: { timeout?: number }): Promise<Sonos>;
     }

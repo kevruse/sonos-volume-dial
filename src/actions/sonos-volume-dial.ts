@@ -15,6 +15,9 @@ export class SonosVolumeDial extends SingletonAction {
 	private logger = streamDeck.logger.createScope('SonosVolumeDial');
 	private states: Map<string, ActionState> = new Map();
 
+	private playSvg: string = '';
+	private pauseSvg: string = '';
+
 	/**
 	 * Start polling for speaker state
 	 */
@@ -71,10 +74,73 @@ export class SonosVolumeDial extends SingletonAction {
 				pollTimeoutId: null,
 				volumeChangeTimeout: null,
 				currentAction: null,
-				currentSettings: null
+				currentSettings: null,
+				currentTrackTitle: '',
+				currentArtist: '',
+				currentAlbumArtBase64: '',
+				currentDuration: 1,
+				lastTrackTitle: '',
+				lastPollTime: 0,
+				lastPosition: 0,
+				tickInterval: null
 			});
 		}
 		return this.states.get(contextId)!;
+	}
+
+	/**
+	 * Load play and pause SVG icons from disk
+	 */
+	private async loadIcons(): Promise<void> {
+		const logger = this.logger.createScope('Icons');
+		try {
+			const fs = await import('fs');
+			const path = await import('path');
+			const url = await import('url');
+			const base = path.join(path.dirname(url.fileURLToPath(import.meta.url)), '..', 'imgs');
+			const playData = fs.readFileSync(path.join(base, 'play.svg'));
+			const pauseData = fs.readFileSync(path.join(base, 'pause.svg'));
+			this.playSvg = `data:image/svg+xml;base64,${playData.toString('base64')}`;
+			this.pauseSvg = `data:image/svg+xml;base64,${pauseData.toString('base64')}`;
+			logger.info('Icons loaded successfully');
+		} catch (error) {
+			logger.error('Failed to load icons:', {
+				error: error instanceof Error ? error.message : String(error)
+			});
+		}
+	}
+
+	/**
+	  * Get the play state icon based on paused state
+	  */
+	private getPlayStateIcon(isPaused: boolean): string {
+		return isPaused ? this.playSvg : this.pauseSvg;
+	}
+
+	/**
+	  * Start a 1-second timer to update elapsed time display
+	  */
+	private startTickTimer(contextId: string): void {
+		const state = this.getState(contextId);
+		if (state.tickInterval) return;
+		if (state.isPaused) return;
+
+		state.tickInterval = setInterval(() => {
+			const state = this.getState(contextId);
+			if (!state.currentAction || !state.currentSettings) return;
+			if (state.isRotating) return;
+			if (state.isPaused) {
+				clearInterval(state.tickInterval!);
+				state.tickInterval = null;
+				return;
+			}
+			const elapsed = state.lastPosition + Math.round((Date.now() - state.lastPollTime) / 1000);
+			const clamped = Math.min(elapsed, state.currentDuration);
+
+			state.currentAction.setFeedback({
+				elapsed: this.formatTime(clamped)
+			});
+		}, 1000);
 	}
 
 	/**
@@ -123,6 +189,39 @@ export class SonosVolumeDial extends SingletonAction {
 	}
 
 	/**
+	 * Format seconds as m:ss
+	  */
+	private formatTime(seconds: number): string {
+		const mins = Math.floor(seconds / 60);
+		const secs = Math.floor(seconds % 60);
+		return `${mins}:${secs.toString().padStart(2, '0')}`;
+	}
+
+	/**
+	 * Fetch album art and return as base64 string
+	 */
+	private async fetchAlbumArt(albumArtURI: string, speakerHost: string): Promise<string> {
+		const logger = this.logger.createScope('AlbumArt');
+		try {
+			if (!albumArtURI) return '';
+			const url = albumArtURI.startsWith('http')
+				? albumArtURI
+				: `http://${speakerHost}:1400${albumArtURI}`;
+			const response = await fetch(url);
+			if (!response.ok) return '';
+			const buffer = await response.arrayBuffer();
+			const base64 = Buffer.from(buffer).toString('base64');
+			const mimeType = response.headers.get('content-type') || 'image/jpeg';
+			return `data:${mimeType};base64,${base64}`;
+		} catch (error) {
+			logger.error('Failed to fetch album art:', {
+				error: error instanceof Error ? error.message : String(error)
+			});
+			return '';
+		}
+	}
+
+	/**
 	 * Self-scheduling poll function that maintains consistent spacing
 	 */
 	private async pollWithDelay(contextId: string, logger: ReturnType<typeof streamDeck.logger.createScope>) {
@@ -156,28 +255,48 @@ export class SonosVolumeDial extends SingletonAction {
 					}
 				}
 
-				const [volume, currentState] = await Promise.all([
+				const [volume, currentState, track] = await Promise.all([
 					state.sonos.getVolume(),
-					state.sonos.getCurrentState()
+					state.sonos.getCurrentState(),
+					state.sonos.currentTrack()
 				]);
 				const isPaused = currentState === 'paused' || currentState === 'stopped';
 
-				if ((volume !== state.lastKnownVolume || isPaused !== state.isPaused) && !state.isRotating) {
-					logger.debug('Speaker state changed externally - volume:', volume, 'paused:', isPaused);
+				// Fetch album art only when track changes
+				const trackChanged = track?.title !== state.lastTrackTitle;
+				if (track?.title && trackChanged) {
+					state.lastTrackTitle = track.title;
+					state.currentTrackTitle = track.title || '';
+					state.currentArtist = track.artist || '';
+					state.currentDuration = track.duration || 1;
+					const group = this.cachedGroups.find(g => g.Name === state.currentSettings?.groupName);
+					if (group && track.albumArtURI) {
+						state.currentAlbumArtBase64 = await this.fetchAlbumArt(track.albumArtURI, group.host);
+					}
+				}
+
+				if (!state.isRotating) {
 					state.lastKnownVolume = volume;
 					state.isPaused = isPaused;
+					if (!isPaused) {
+						state.lastPosition = track?.position || 0;
+						state.lastPollTime = Date.now();
+					}
 
 					state.currentAction.setFeedback({
-						value: {
-							value: volume,
-							opacity: isPaused ? 0.5 : 1.0,
-						},
-						indicator: {
-							value: volume,
-							opacity: isPaused ? 0.5 : 1.0
-						}
+						albumArt: state.currentAlbumArtBase64,
+						groupName: state.currentSettings?.groupName || '',
+						playState: this.getPlayStateIcon(isPaused),
+						trackTitle: state.currentTrackTitle,
+						artistName: state.currentArtist,
+						elapsed: this.formatTime(track?.position || 0),
+						progress: state.currentDuration > 0
+							? Math.round((track?.position || 0) / state.currentDuration * 100)
+							: 0,
+						duration: this.formatTime(state.currentDuration)
 					});
 					state.currentAction.setSettings({ ...state.currentSettings, value: volume });
+					this.startTickTimer(contextId);
 				}
 			} catch (error) {
 				logger.error('Failed to poll speaker state:', {
@@ -217,6 +336,10 @@ export class SonosVolumeDial extends SingletonAction {
 			clearTimeout(state.pollTimeoutId);
 			state.pollTimeoutId = null;
 		}
+		if (state.tickInterval) {
+			clearInterval(state.tickInterval);
+			state.tickInterval = null;
+		}
 		state.currentAction = null;
 		state.currentSettings = null;
 	}
@@ -254,6 +377,10 @@ export class SonosVolumeDial extends SingletonAction {
 			clearTimeout(state.volumeChangeTimeout);
 			state.volumeChangeTimeout = null;
 		}
+		if (state.tickInterval) {
+			clearInterval(state.tickInterval);
+			state.tickInterval = null;
+		}
 		this.stopPolling(ev.action.id);
 		this.states.delete(ev.action.id);
 	}
@@ -267,6 +394,10 @@ export class SonosVolumeDial extends SingletonAction {
 		try {
 			if (!ev.action.isDial()) return;
 
+			if (!this.playSvg) {
+				await this.loadIcons();
+			}
+
 			const dialAction = ev.action as DialAction<SonosVolumeDialSettings>;
 			const state = this.getState(dialAction.id);
 			const { groupName, value = 50, volumeStep = 5 } = ev.payload.settings;
@@ -274,15 +405,16 @@ export class SonosVolumeDial extends SingletonAction {
 			state.currentAction = dialAction;
 			state.currentSettings = ev.payload.settings;
 
+			await dialAction.setFeedbackLayout('layouts/track-info.json');
 			dialAction.setFeedback({
-				value: {
-					value,
-					opacity: state.isPaused ? 0.5 : 1.0
-				},
-				indicator: {
-					value,
-					opacity: state.isPaused ? 0.5 : 1.0
-				},
+				albumArt: '',
+				groupName: groupName || '',
+				playState: this.getPlayStateIcon(state.isPaused),
+				trackTitle: '',
+				artistName: '',
+				elapsed: '0:00',
+				progress: 0,
+				duration: '0:00'
 			});
 
 			if (groupName) {
@@ -305,15 +437,16 @@ export class SonosVolumeDial extends SingletonAction {
 					state.lastKnownVolume = volume;
 					state.isPaused = isPaused;
 
+					await dialAction.setFeedbackLayout('layouts/track-info.json');
 					dialAction.setFeedback({
-						value: {
-							value: volume,
-							opacity: isPaused ? 0.5 : 1.0,
-						},
-						indicator: {
-							value: volume,
-							opacity: isPaused ? 0.5 : 1.0
-						}
+						albumArt: '',
+						groupName: groupName || '',
+						playState: this.getPlayStateIcon(state.isPaused),
+						trackTitle: '',
+						artistName: '',
+						elapsed: '0:00',
+						progress: 0,
+						duration: '0:00'
 					});
 
 					dialAction.setSettings({ groupName, volumeStep, value: volume });
@@ -356,15 +489,12 @@ export class SonosVolumeDial extends SingletonAction {
 			const { ticks } = ev.payload;
 			const newValue = Math.max(0, Math.min(100, value + (ticks * volumeStep)));
 
+			await dialAction.setFeedbackLayout('layouts/volume.json');
 			dialAction.setFeedback({
-				value: {
-					value: newValue,
-					opacity: state.isPaused ? 0.5 : 1.0,
-				},
-				indicator: {
-					value: newValue,
-					opacity: state.isPaused ? 0.5 : 1.0
-				}
+				albumArt: state.currentAlbumArtBase64,
+				volumeNumber: String(newValue),
+				volumeLabel: 'volume',
+				volumeBar: newValue
 			});
 			dialAction.setSettings({ ...state.currentSettings, value: newValue });
 			state.lastKnownVolume = newValue;
@@ -402,6 +532,7 @@ export class SonosVolumeDial extends SingletonAction {
 						this.showAlert(dialAction, 'Failed to update volume');
 					} finally {
 						state.isRotating = false;
+						await dialAction.setFeedbackLayout('layouts/track-info.json');
 						this.startPolling(dialAction);
 					}
 				}, SonosVolumeDial.VOLUME_CHANGE_DEBOUNCE_MS);
@@ -433,14 +564,7 @@ export class SonosVolumeDial extends SingletonAction {
 			const newPausedState = !state.isPaused;
 			state.isPaused = newPausedState;
 			dialAction.setFeedback({
-				value: {
-					value: state.lastKnownVolume,
-					opacity: newPausedState ? 0.5 : 1.0,
-				},
-				indicator: {
-					value: state.lastKnownVolume,
-					opacity: newPausedState ? 0.5 : 1.0
-				}
+				playState: this.getPlayStateIcon(newPausedState),
 			});
 
 			if (groupName) {
@@ -493,14 +617,7 @@ export class SonosVolumeDial extends SingletonAction {
 			const newPausedState = !state.isPaused;
 			state.isPaused = newPausedState;
 			dialAction.setFeedback({
-				value: {
-					value: state.lastKnownVolume,
-					opacity: newPausedState ? 0.5 : 1.0,
-				},
-				indicator: {
-					value: state.lastKnownVolume,
-					opacity: newPausedState ? 0.5 : 1.0
-				}
+				playState: this.getPlayStateIcon(newPausedState),
 			});
 
 			if (groupName) {
@@ -577,15 +694,16 @@ export class SonosVolumeDial extends SingletonAction {
 						state.lastKnownVolume = volume;
 						state.isPaused = isPaused;
 
+						await dialAction.setFeedbackLayout('layouts/track-info.json');
 						dialAction.setFeedback({
-							value: {
-								value: volume,
-								opacity: isPaused ? 0.5 : 1.0,
-							},
-							indicator: {
-								value: volume,
-								opacity: isPaused ? 0.5 : 1.0
-							}
+							albumArt: '',
+							groupName: groupName || '',
+							playState: this.getPlayStateIcon(isPaused),
+							trackTitle: '',
+							artistName: '',
+							elapsed: '0:00',
+							progress: 0,
+							duration: '0:00'
 						});
 						dialAction.setSettings({ ...ev.payload.settings, value: volume });
 						this.startPolling(dialAction);
@@ -612,9 +730,9 @@ export class SonosVolumeDial extends SingletonAction {
  * Settings for {@link SonosVolumeDial}.
  */
 type SonosVolumeDialSettings = {
-		value: number;
-		groupName?: string;
-		volumeStep: number;
+	value: number;
+	groupName?: string;
+	volumeStep: number;
 };
 type ActionState = {
 	sonos: Sonos | null;
@@ -626,4 +744,12 @@ type ActionState = {
 	volumeChangeTimeout: NodeJS.Timeout | null;
 	currentAction: DialAction<SonosVolumeDialSettings> | null;
 	currentSettings: SonosVolumeDialSettings | null;
+	currentTrackTitle: string;
+	currentArtist: string;
+	currentAlbumArtBase64: string;
+	currentDuration: number;
+	lastTrackTitle: string;
+	lastPollTime: number;
+	lastPosition: number;
+	tickInterval: NodeJS.Timeout | null;
 };

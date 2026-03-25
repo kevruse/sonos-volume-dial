@@ -5,58 +5,62 @@
         {
             "key": "albumArt",
             "type": "pixmap",
-            "rect": [4, 20, 60, 60]
+            "rect": [2, 4, 64, 70]
         },
         {
             "key": "groupName",
             "type": "text",
-            "rect": [68, 6, 100, 12],
-            "font": { "size": 10, "weight": 400 },
+            "rect": [70, 4, 94, 22],
+            "font": { "size": 16, "weight": 400 },
             "alignment": "left",
-            "text-overflow": "ellipsis"
+            "text-overflow": "ellipsis",
+            "value": ""
         },
         {
             "key": "playState",
-            "type": "text",
-            "rect": [168, 6, 28, 12],
-            "font": { "size": 10, "weight": 400 },
-            "alignment": "right"
+            "type": "pixmap",
+            "rect": [166, 4, 22, 22]
         },
         {
             "key": "trackTitle",
             "type": "text",
-            "rect": [68, 22, 130, 18],
-            "font": { "size": 12, "weight": 700 },
+            "rect": [70, 28, 128, 26],
+            "font": { "size": 18, "weight": 700 },
             "alignment": "left",
-            "text-overflow": "ellipsis"
+            "text-overflow": "ellipsis",
+            "value": ""
         },
         {
             "key": "artistName",
             "type": "text",
-            "rect": [68, 44, 120, 14],
-            "font": { "size": 10, "weight": 400 },
+            "rect": [70, 56, 128, 18],
+            "font": { "size": 13, "weight": 400 },
             "alignment": "left",
-            "text-overflow": "ellipsis"
+            "text-overflow": "ellipsis",
+            "value": ""
         },
         {
             "key": "elapsed",
             "type": "text",
-            "rect": [68, 62, 26, 12],
-            "font": { "size": 9, "weight": 400 },
-            "alignment": "left"
+            "rect": [2, 76, 30, 14],
+            "font": { "size": 13, "weight": 400 },
+            "alignment": "right",
+            "value": ""
         },
         {
             "key": "progress",
             "type": "bar",
-            "rect": [96, 65, 88, 6],
-            "bar_fill_c": "#1DB954"
+            "rect": [34, 76, 128, 18],
+            "bar_fill_c": "#FFFFFF",
+            "value": 0
         },
         {
             "key": "duration",
             "type": "text",
-            "rect": [186, 62, 12, 12],
-            "font": { "size": 9, "weight": 400 },
-            "alignment": "right"
+            "rect": [164, 76, 34, 14],
+            "font": { "size": 13, "weight": 400 },
+            "alignment": "left",
+            "value": ""
         }
     ]
 }
