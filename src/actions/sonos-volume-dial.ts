@@ -174,7 +174,7 @@ export class SonosVolumeDial extends SingletonAction {
 			if (this.cachedGroups.length === 0) {
 				await this.discoverGroups();
 			}
-			const group = this.cachedGroups.find(g => g.Name === groupName);
+			const group = this.cachedGroups.find(g => g.Name === groupName) || this.cachedGroups.find(g => g.Name.startsWith(groupName.split(' + ')[0]));
 			if (!group) {
 				logger.error('Group not found:', groupName);
 				return null;
@@ -675,7 +675,9 @@ export class SonosVolumeDial extends SingletonAction {
 			if (groupName !== previousGroupName) {
 				state.sonos = null;
 				this.stopPolling(dialAction.id);
-
+				state.currentAction = dialAction;
+				state.currentSettings = ev.payload.settings;
+				
 				if (groupName) {
 					logger.info('Connecting to new group:', groupName);
 					state.sonos = await this.getGroupConnection(groupName);

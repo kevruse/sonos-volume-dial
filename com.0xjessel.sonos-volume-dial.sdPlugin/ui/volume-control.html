@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head lang="en">
     <title>Sonos Volume Control Settings</title>
     <meta charset="utf-8" />
@@ -8,19 +9,25 @@
         .sdpi-item-label {
             color: white;
         }
+
         .sdpi-item-value {
             color: white !important;
         }
+
         select.sdpi-item-value option {
             background-color: #2D2D2D;
             color: white;
         }
+
         .sdpi-item-value::placeholder {
             color: rgba(255, 255, 255, 0.5);
         }
-        input.sdpi-item-value, select.sdpi-item-value {
+
+        input.sdpi-item-value,
+        select.sdpi-item-value {
             color: white !important;
         }
+
         .refresh-btn {
             background: #444;
             color: white;
@@ -30,9 +37,11 @@
             border-radius: 3px;
             margin-left: 8px;
         }
+
         .refresh-btn:hover {
             background: #555;
         }
+
         .status-message {
             font-size: 12px;
             color: #999;
@@ -74,6 +83,7 @@
         let websocket = null;
         let pluginAction = null;
         let currentSettings = {};
+        let groupsLoaded = false;
 
         function setStatus(message) {
             document.getElementById('statusMessage').textContent = message;
@@ -82,7 +92,7 @@
         function populateGroups(groups, selectedGroup) {
             const select = document.getElementById('groupName');
             select.innerHTML = '<option value="">-- Select a group --</option>';
-            
+
             if (groups.length === 0) {
                 setStatus('No groups found. Make sure Sonos is on and try refreshing.');
                 return;
@@ -140,23 +150,26 @@
             }));
         }
 
-        window.connectElgatoStreamDeckSocket = function(inPort, inPluginUUID, inRegisterEvent, inInfo) {
+        window.connectElgatoStreamDeckSocket = function (inPort, inPluginUUID, inRegisterEvent, inInfo) {
             pluginAction = inPluginUUID;
             websocket = new WebSocket('ws://127.0.0.1:' + inPort);
 
-            websocket.onopen = function() {
+            websocket.onopen = function () {
                 websocket.send(JSON.stringify({ event: inRegisterEvent, uuid: inPluginUUID }));
                 websocket.send(JSON.stringify({ event: 'getSettings', context: pluginAction }));
             };
 
-            websocket.onmessage = function(evt) {
+            websocket.onmessage = function (evt) {
                 const jsonObj = JSON.parse(evt.data);
                 const { event, payload } = jsonObj;
 
                 if (event === 'didReceiveSettings') {
                     currentSettings = payload.settings;
                     updateUI(payload.settings);
-                    requestGroups();
+                    if (!groupsLoaded) {
+                        groupsLoaded = true;
+                        requestGroups();
+                    }
                 }
 
                 if (event === 'sendToPropertyInspector') {
@@ -172,4 +185,5 @@
         document.getElementById('refreshBtn').addEventListener('click', requestGroups);
     </script>
 </body>
+
 </html>
