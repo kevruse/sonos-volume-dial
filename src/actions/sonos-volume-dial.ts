@@ -614,12 +614,6 @@ export class SonosVolumeDial extends SingletonAction {
 			const state = this.getState(dialAction.id);
 			const { groupName } = ev.payload.settings;
 
-			const newPausedState = !state.isPaused;
-			state.isPaused = newPausedState;
-			dialAction.setFeedback({
-				playState: this.getPlayStateIcon(newPausedState),
-			});
-
 			if (groupName) {
 				Promise.resolve().then(async () => {
 					try {
@@ -634,14 +628,14 @@ export class SonosVolumeDial extends SingletonAction {
 							}
 						}
 
-						await state.sonos.togglePlayback();
+						await state.sonos.next();
 					} catch (error) {
-						logger.error('Failed to toggle playback:', {
+						logger.error('Failed to skip to next track::', {
 							error: error instanceof Error ? error.message : String(error),
 							stack: error instanceof Error ? error.stack : undefined
 						});
 						state.sonos = null;
-						this.showAlert(dialAction, 'Failed to toggle playback');
+						this.showAlert(dialAction, 'Failed to skip to next track:');
 					}
 				});
 			} else {

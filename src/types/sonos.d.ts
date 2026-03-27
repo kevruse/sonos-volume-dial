@@ -8,6 +8,7 @@ declare module 'sonos' {
         togglePlayback(): Promise<boolean>;
         getAllGroups(): Promise<SonosGroup[]>;
         currentTrack(): Promise<SonosTrack>;
+        next(): Promise<boolean>;
     }
 
     export interface SonosGroup {
